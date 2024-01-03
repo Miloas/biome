@@ -52,6 +52,7 @@ CssBogusParameter = SyntaxElement*
 CssBogusDeclarationItem = SyntaxElement*
 CssBogusMediaQuery =  SyntaxElement*
 CssBogusProperty =  SyntaxElement*
+CssBogusPropertyValue = SyntaxElement*
 
 CssRoot =
 	bom: 'UNICODE_BOM'?
@@ -458,7 +459,7 @@ CssDeclaration =
 //     representation of the name (e.g., `z-index` becomes `ZIndex`).
 //   - The `value` field should be defined as a Node with the name `AnyCss*PropertyValue`, with
 //     the * being the PascalCase representation of the property name. This will tell the code
-//     generator to automatically insert the `CssWideKeyword`, `CssGenericComponentValueList`, and
+//     generator to automatically insert the `CssWideKeyword`, `CssUnknownPropertyValue`, and
 //     `CssBogusPropertyValue` variants for the enum.
 //   - With that automatic insertion by the code generator, only specify the _explicitly defined_
 //     productions from the CSS grammar as part of the `AnyCss*PropertyValue` node, leaving out
@@ -538,7 +539,7 @@ CssAllProperty =
 // The only valid values for the `all` property are the css-wide keywords. We
 // still use the `AnyCss*PropertyValue` node naming convention here to
 // automatically insert `CssBogusPropertyValue` and
-// `CssGenericComponentValueList` as alternatives for the parser to use for
+// `CssUnknownPropertyValue` as alternatives for the parser to use for
 // recovery and representing "valid but incorrect" inputs.
 AnyCssAllPropertyValue = CssWideKeyword
 
@@ -554,6 +555,7 @@ CssZIndexProperty =
 	':'
 	value: AnyCssZIndexPropertyValue
 
+// The parser will be responsible for ensuring the `Number` is an integer.
 AnyCssZIndexPropertyValue =
 	CssAuto
 	| CssNumber
@@ -569,7 +571,16 @@ CssAuto =
 /// the "Property value ranges" value type of the value syntax definition:
 /// https://www.w3.org/TR/css-values/#component-types.
 CssWideKeyword =
-	value: 'inherit' | 'initial' | 'unset' | 'revert' | 'revert-layer';
+	value: ('inherit' | 'initial' | 'unset' | 'revert' | 'revert-layer')
+
+/// Because of the way Biome's syntax generation works, List nodes can't be used
+/// directly as variants in a union. This node is a wrapper around the generic
+/// component value list to indicate a property value that is _syntactically valid_,
+/// but doesn't match the syntax definition for that property.
+///
+/// It is a more-correct alternative to a Bogus node that implies _acceptability_,
+/// but not necessarily _semantic validity_.
+CssUnknownPropertyValue = CssGenericComponentValueList
 
 CssGenericProperty =
 	name: AnyCssDeclarationName

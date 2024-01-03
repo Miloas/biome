@@ -602,6 +602,23 @@ fn is_at_string(p: &mut CssParser) -> bool {
     p.at(CSS_STRING_LITERAL)
 }
 
+#[inline]
+pub(crate) fn parse_css_auto(p: &mut CssParser) -> ParsedSyntax {
+    if !is_at_css_auto(p) {
+        return Absent;
+    }
+
+    let m = p.start();
+
+    p.bump(AUTO_KW);
+
+    Present(m.complete(p, CSS_AUTO))
+}
+
+fn is_at_css_auto(p: &mut CssParser) -> bool {
+    p.at(CSS_STRING_LITERAL)
+}
+
 /// Attempt to parse some input with the given parsing function. If parsing
 /// succeeds, `Ok` is returned with the result of the parse and the state is
 /// preserved. If parsing fails, this function rewinds the parser back to
