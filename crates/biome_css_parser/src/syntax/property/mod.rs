@@ -3,16 +3,19 @@ mod z_index;
 
 use crate::parser::CssParser;
 use crate::syntax::parse_error::expected_component_value;
-use crate::syntax::{is_at_any_value, is_at_identifier, parse_any_value, parse_regular_identifier};
+use crate::syntax::{
+    is_at_any_value, is_at_identifier, parse_any_value, parse_regular_identifier, try_parse,
+};
 use biome_css_syntax::CssSyntaxKind::*;
 use biome_css_syntax::{CssSyntaxKind, T};
 use biome_parser::parse_lists::ParseNodeList;
 use biome_parser::parse_recovery::{ParseRecoveryTokenSet, RecoveryResult};
 use biome_parser::prelude::ParsedSyntax;
 use biome_parser::prelude::ParsedSyntax::{Absent, Present};
-use biome_parser::{token_set, Marker, Parser, TokenSet};
+use biome_parser::{token_set, Parser, TokenSet};
 
 use self::all::parse_all_property;
+use self::z_index::parse_z_index_property;
 
 pub(crate) fn parse_any_property(p: &mut CssParser) -> ParsedSyntax {
     if !is_at_generic_property(p) {
@@ -21,6 +24,7 @@ pub(crate) fn parse_any_property(p: &mut CssParser) -> ParsedSyntax {
 
     match p.cur_text() {
         "all" => parse_all_property(p),
+        "z-index" => parse_z_index_property(p),
         _ => parse_generic_property(p),
     }
 }
@@ -46,14 +50,53 @@ pub(crate) fn parse_generic_property(p: &mut CssParser) -> ParsedSyntax {
     Present(m.complete(p, CSS_GENERIC_PROPERTY))
 }
 
-pub(crate) fn parse_explicit_property_value<T, E>(
+/// Attempt to parse the value of a property using the provided parse function.
+/// If the parsing succeeds, then check if the entire value definition has been
+/// consumed. If it has, return the parsed content as the value for the
+/// property. If more content remains, then rewind and re-parse the value
+/// definition as either a CSS-wide keyword value (like `width: unset;`), or
+/// fallback to a generic component value list otherwise.
+///
+/// This function is guaranteed to return Present syntax, handling all cases
+/// including Bogus values. See [parse_any_implicit_property_value] for more
+/// information.
+///
+/// ```
+/// /// This function parses a property with the defined grammar of:
+/// ///   my_property : <length> | <percentage>
+/// /// `parse_property_value_with_fallbacks` takes care of handling syntax
+/// /// errors, invalid values, and css-wide keyword values.
+/// fn parse_my_property(p: &mut CssParser) -> ParsedSyntax {
+///   let m = p.start();
+///   parse_regular_identifer(p).ok();
+///   p.expect(T![:])
+///
+///   parse_property_value_with_fallbacks(p, |p| {
+///     parse_length(p).or_else(|| parse_percentage(p))
+///   }).ok();
+///   
+///   Present(m.complete(p, CSS_MY_PROPERTY))
+/// }
+/// ````
+#[inline]
+pub(crate) fn parse_property_value_with_fallbacks(
     p: &mut CssParser,
-    kind: CssSyntaxKind,
-    func: impl FnOnce(Marker) -> ParsedSyntax,
+    func: impl FnOnce(&mut CssParser) -> ParsedSyntax,
 ) -> ParsedSyntax {
-    let m = p.start();
+    let result = try_parse(p, |p| {
+        let parsed = func(p);
 
-    func(m)
+        if parsed.is_present() && is_at_end_of_property_value(p) {
+            return Ok(parsed);
+        }
+
+        return Err(());
+    });
+
+    match result {
+        Ok(parsed) => parsed,
+        Err(_) => parse_any_implicit_property_value(p),
+    }
 }
 
 /// Parse any property value other than what is explicitly defined in the formal syntax grammar
@@ -65,32 +108,28 @@ pub(crate) fn parse_explicit_property_value<T, E>(
 ///     node, which become `CssUnknownPropertyValue` (a wrapper around `CssGenericComponentValueList`).
 ///   - Syntactically-_incorrect_ values, which become `CssBogusPropertyValue`.
 ///
-/// This function should be called as the alternate for the value in all property parsing functions.
-///
-/// ```
-/// /// This function parses a property with the defined grammar of:
-/// ///   my_property : <length> | <percentage>
-/// /// Calling the `parse_any_implicit_property_value` function ensures the
-/// /// keyword value, generic, and bogus variants are also covered.
-/// fn parse_my_property(p: &mut CssParser) -> ParsedSyntax {
-///   let m = p.start();
-///   parse_regular_identifer(p).ok();
-///   p.expect(T![:])
-///   parse_length(p)
-///     .or_else(|| parse_percentage(p))
-///     .or_else(|| parse_any_implicit_property_value(p));
-///   
-///   Present(m.complete(p, CSS_MY_PROPERTY))
-/// }
-/// ```
+/// This function is automatically called when using [parse_property_value_with_fallbacks] to
+/// guarantee that a value is always fully parsed and consumed.
 pub(crate) fn parse_any_implicit_property_value(p: &mut CssParser) -> ParsedSyntax {
-    if p.at_ts(CSS_WIDE_KEYWORD_TOKEN_SET) {
-        parse_css_wide_keyword(p)
-    } else {
-        let m = p.start();
-        GenericComponentValueList.parse_list(p);
-        Present(m.complete(p, CSS_UNKNOWN_PROPERTY_VALUE))
+    // Attempt to parse a single keyword value as a valid definition.
+    let keyword_result = try_parse(p, |p| {
+        let parsed = parse_css_wide_keyword(p);
+        if is_at_end_of_property_value(p) {
+            return Ok(parsed);
+        }
+
+        return Err(());
+    });
+
+    if let Ok(parsed) = keyword_result {
+        return parsed;
     }
+
+    // If the keyword value didn't fully consume the value, then fallback to
+    // parsing a generic value list.
+    let m = p.start();
+    GenericComponentValueList.parse_list(p);
+    Present(m.complete(p, CSS_UNKNOWN_PROPERTY_VALUE))
 }
 
 const CSS_WIDE_KEYWORD_TOKEN_SET: TokenSet<CssSyntaxKind> = token_set![
@@ -114,22 +153,6 @@ pub(crate) fn parse_css_wide_keyword(p: &mut CssParser) -> ParsedSyntax {
 }
 
 const CSS_END_OF_PROPERTY_VALUE_TOKEN_SET: TokenSet<CssSyntaxKind> = token_set!(T!['}'], T![;]);
-
-/// Check that the parser has reached the end of the property value definition,
-/// complete the marker, and return the ParsedSyntax for it. If the end of the
-/// value definition has _not_ been reached, the marker is abandoned and this
-/// function returns Absent, allowing alternate parses to continue.
-pub(crate) fn complete_property_value(
-    p: &mut CssParser,
-    m: &Marker,
-    kind: CssSyntaxKind,
-) -> ParsedSyntax {
-    if !is_at_end_of_property_value(p) {
-        return Absent;
-    }
-
-    Present(m.complete(p, kind))
-}
 
 /// Returns true if the parser has reached the end of what should be considered
 /// the value for a property. This is used to ensure that all expected values
