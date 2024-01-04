@@ -502,9 +502,10 @@ CssDeclaration =
 // as part of the parent rule itself:
 //
 //   width =
-//       auto |
+//       CssAuto |
 //       CssLength |
 //       CssPercentage
+//       // ...
 //
 // This way, the `width` knows exactly what kind of value it contains as a direct child, without
 // having to go through an intermediate node, and consumers can more easily see where lengths and
